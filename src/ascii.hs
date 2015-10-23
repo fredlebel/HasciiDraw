@@ -300,9 +300,9 @@ insertMode stateRef = do
         normalLoop = do
             st <- liftIO $ readIORef stateRef
             w <- defaultWindow
+            updateWindowNoRefresh (_editorWin st) $ setTouched True
             updateWindowNoRefresh (_imageWin st) $ uncurry moveCursor (_currentPos st)
-            --renderWindows [w, _imageWin st, _editorWin st]
-            renderWindows [w, _editorWin st, _imageWin st]
+            renderWindows [_imageWin st, _editorWin st, _imageWin st]
             ev <- getEvent w Nothing
             case ev of
                 Nothing -> normalLoop
@@ -314,7 +314,7 @@ insertMode stateRef = do
                             Nothing -> normalMode stateRef
                             Just _ -> normalLoop
                     EventCharacter c -> do
-                        (y, x) <- getCursor (_imageWin st)
+                        let (y, x) = _currentPos st
                         updateWindowNoRefresh (_imageWin st) $ do
                             moveCursor y x
                             drawGlyph $ Glyph c [AttributeColor (_currentColor st)]
@@ -350,8 +350,9 @@ normalMode stateRef = do
         normalLoop = do
             st <- liftIO $ readIORef stateRef
             w <- defaultWindow
+            updateWindowNoRefresh (_editorWin st) $ setTouched True
             updateWindowNoRefresh (_imageWin st) $ uncurry moveCursor (_currentPos st)
-            renderWindows [w, _imageWin st, _editorWin st]
+            renderWindows [_imageWin st, _editorWin st, _imageWin st]
             ev <- getEvent w Nothing
             case ev of
                 Nothing -> normalLoop
