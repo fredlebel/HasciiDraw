@@ -28,6 +28,7 @@ executable ascii
                        text,
                        setlocale,
                        transformers,
+                       lens,
                        syb
   build-tools:         happy, c2hs, alex
   hs-source-dirs:      src

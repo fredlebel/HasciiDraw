@@ -1,11 +1,15 @@
+{-# LANGUAGE RankNTypes #-}
+
 --import System.IO
-import Control.Concurrent
+--import Control.Concurrent
 import Control.Monad.IO.Class
 import Control.Monad
 import Data.Word
 import Data.IORef
 --import System.Locale.SetLocale
 import UI.NCurses
+import UI.NCurses.Panel
+--import Control.Lens
 
 colorBlack          = Color 0
 colorBrightRed      = Color 1
@@ -241,7 +245,7 @@ restoreColors colors = do
     where
         fn (r,g,b) n = defineColor (Color n) r g b
 
-mkGlyphPicker :: Curses Window
+mkGlyphPicker :: Curses Panel
 mkGlyphPicker = do
     win <- newWindow 18 18 1 1
     updateWindowNoRefresh win $ do
@@ -250,9 +254,10 @@ mkGlyphPicker = do
         forM_ [0..255] $ \n -> do
             moveCursor (n `div` 16 + 1) (n `mod` 16 + 1)
             drawGlyph (Glyph (codepage437 !! fromIntegral n) [])
-    return win
+        moveCursor 8 8
+    newPanel win
 
-mkColorPicker :: Curses Window
+mkColorPicker :: Curses Panel
 mkColorPicker = do
     win <- newWindow 18 18 1 1
     updateWindowNoRefresh win $ do
@@ -261,25 +266,56 @@ mkColorPicker = do
         forM_ [0..255] $ \n -> do
             moveCursor (n `div` 16 + 1) (n `mod` 16 + 1)
             drawGlyph (Glyph 'M' [AttributeColor . ColorID . fromIntegral $ n])
-    return win
+        moveCursor 8 8
+    newPanel win
+
+mkCursorPanel = do
+    curWin <- newWindow 1 1 12 40
+    updateWindowNoRefresh curWin $ do
+        moveCursor 0 0
+    curPan <- newPanel curWin
+    return curPan
 
 data AsciiDrawState = ADS
-    { _colorPickerWin :: Window
-    , _glyphPickerWin :: Window
-    , _imageWin :: Window
-    , _editorWin :: Window
+    { _colorWin :: Panel
+    , _glyphWin :: Panel
+    , _imageWin :: Panel
+    , _editorWin :: Panel
+    , _cursorPanel :: Panel
     , _currentColor :: ColorID
     , _currentChar :: Char
-    , _currentPos :: (Integer, Integer)
     , _colorNormal :: ColorID
     , _colorInsert :: ColorID
     }
 
-safeMoveCursor fn stateRef = do
-    st <- liftIO $ readIORef stateRef
-    let (y, x) = fn . _currentPos $ st
-    unless (y < 0 || y >= 24 || x < 0 || x >= 80) $ do
-        liftIO $ writeIORef stateRef (st {_currentPos = (y, x)})
+newtype Box = Box (Integer, Integer, Integer, Integer)
+
+getWindowBox :: Bool -> Window -> Curses Box
+getWindowBox hasBorder win = do
+    (h, w) <- updateWindowNoRefresh win windowSize
+    if hasBorder
+        then return $ Box (h-2, w-2, 1, 1)
+        else return $ Box (h, w, 0, 0)
+
+inBox :: Box -> (Integer, Integer) -> Bool
+inBox (Box (h, w, y, x)) (y', x') =
+    y' >= y && y' < (h+y) &&
+    x' >= x && x' < (w+x)
+
+safeMoveCursor :: ((Integer, Integer) -> (Integer, Integer)) -> Bool -> Panel -> Curses ()
+safeMoveCursor fn hasBorder p = do
+    win <- getPanelWindow p
+    box <- getWindowBox hasBorder win
+    newPos <- fn <$> updateWindowNoRefresh win cursorPosition
+    when (inBox box newPos) $
+        updateWindowNoRefresh win (uncurry moveCursor newPos)
+
+moveCursorPanel :: Panel -> Panel -> Curses ()
+moveCursorPanel curPan hostPan = do
+    hostWin <- getPanelWindow hostPan
+    (_, _, y, x) <- getWindowRect hostWin
+    (cy, cx) <- updateWindowNoRefresh hostWin cursorPosition
+    movePanel curPan (cy + y) (cx + x)
 
 updateCurrentChar c stateRef = do
     st <- liftIO $ readIORef stateRef
@@ -288,7 +324,8 @@ updateCurrentChar c stateRef = do
 insertMode :: IORef AsciiDrawState -> Curses ()
 insertMode stateRef = do
     st <- liftIO $ readIORef stateRef
-    updateWindowNoRefresh (_editorWin st) $ do
+    editorWin <- getPanelWindow $ _editorWin st
+    updateWindowNoRefresh editorWin $ do
        clear
        setColor (_colorInsert st)
        moveCursor 0 0
@@ -300,45 +337,46 @@ insertMode stateRef = do
         normalLoop = do
             st <- liftIO $ readIORef stateRef
             w <- defaultWindow
-            updateWindowNoRefresh (_editorWin st) $ setTouched True
-            updateWindowNoRefresh (_imageWin st) $ uncurry moveCursor (_currentPos st)
-            renderWindows [_imageWin st, _editorWin st, _imageWin st]
+            moveCursorPanel (_cursorPanel st) (_imageWin st)
+            refreshPanels
+            render
             ev <- getEvent w Nothing
+            imageWin <- getPanelWindow $ _imageWin st
             case ev of
                 Nothing -> normalLoop
                 Just ev' -> case ev' of
-                    EventCharacter 'q' -> return ()
                     EventCharacter '\x001B' -> do -- ESC or ALT
                         evProbe <- getEvent w (Just 0)
                         case evProbe of
                             Nothing -> normalMode stateRef
                             Just _ -> normalLoop
                     EventCharacter c -> do
-                        let (y, x) = _currentPos st
-                        updateWindowNoRefresh (_imageWin st) $ do
-                            moveCursor y x
+                        updateWindowNoRefresh imageWin $ do
                             drawGlyph $ Glyph c [AttributeColor (_currentColor st)]
-                        safeMoveCursor (\_ -> (y,x+1)) stateRef
                         updateCurrentChar c stateRef
                         normalLoop
                     EventSpecialKey KeyLeftArrow -> do
-                        safeMoveCursor (\(y,x) -> (y,x-1)) stateRef
+                        safeMoveCursor (\(y,x) -> (y,x-1)) False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyRightArrow -> do
-                        safeMoveCursor (\(y,x) -> (y,x+1)) stateRef
+                        safeMoveCursor (\(y,x) -> (y,x+1)) False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyUpArrow -> do
-                        safeMoveCursor (\(y,x) -> (y-1,x)) stateRef
+                        safeMoveCursor (\(y,x) -> (y-1,x)) False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyDownArrow -> do
-                        safeMoveCursor (\(y,x) -> (y+1,x)) stateRef
+                        safeMoveCursor (\(y,x) -> (y+1,x)) False (_imageWin st)
+                        normalLoop
+                    EventSpecialKey (KeyFunction 1) -> do
+                        colorPrompt stateRef
                         normalLoop
                     _ -> normalLoop
 
 normalMode :: IORef AsciiDrawState -> Curses ()
 normalMode stateRef = do
     st <- liftIO $ readIORef stateRef
-    updateWindowNoRefresh (_editorWin st) $ do
+    editorWin <- getPanelWindow $ _editorWin st
+    updateWindowNoRefresh editorWin $ do
        clear
        setColor (_colorNormal st)
        moveCursor 0 0
@@ -350,9 +388,9 @@ normalMode stateRef = do
         normalLoop = do
             st <- liftIO $ readIORef stateRef
             w <- defaultWindow
-            updateWindowNoRefresh (_editorWin st) $ setTouched True
-            updateWindowNoRefresh (_imageWin st) $ uncurry moveCursor (_currentPos st)
-            renderWindows [_imageWin st, _editorWin st, _imageWin st]
+            moveCursorPanel (_cursorPanel st) (_imageWin st)
+            refreshPanels
+            render
             ev <- getEvent w Nothing
             case ev of
                 Nothing -> normalLoop
@@ -360,18 +398,52 @@ normalMode stateRef = do
                     EventCharacter 'q' -> return ()
                     EventCharacter 'i' -> insertMode stateRef
                     EventSpecialKey KeyLeftArrow -> do
-                        safeMoveCursor (\(y,x) -> (y,x-1)) stateRef
+                        safeMoveCursor (\(y,x) -> (y,x-1)) False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyRightArrow -> do
-                        safeMoveCursor (\(y,x) -> (y,x+1)) stateRef
+                        safeMoveCursor (\(y,x) -> (y,x+1)) False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyUpArrow -> do
-                        safeMoveCursor (\(y,x) -> (y-1,x)) stateRef
+                        safeMoveCursor (\(y,x) -> (y-1,x)) False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyDownArrow -> do
-                        safeMoveCursor (\(y,x) -> (y+1,x)) stateRef
+                        safeMoveCursor (\(y,x) -> (y+1,x)) False (_imageWin st)
                         normalLoop
                     _ -> normalLoop
+
+colorPrompt :: IORef AsciiDrawState -> Curses ()
+colorPrompt stateRef = do
+    st <- liftIO $ readIORef stateRef
+    showPanel $ _colorWin st
+    raisePanel $ _cursorPanel st
+    loop
+    hidePanel $ _colorWin st
+    where
+        loop = do
+            st <- liftIO $ readIORef stateRef
+            w <- defaultWindow
+            moveCursorPanel (_cursorPanel st) (_colorWin st)
+            refreshPanels
+            render
+            ev <- getEvent w Nothing
+            case ev of
+                Nothing -> loop
+                Just ev' -> case ev' of
+                    EventCharacter 'q' -> do
+                        return ()
+                    EventSpecialKey KeyLeftArrow -> do
+                        safeMoveCursor (\(y,x) -> (y,x-1)) True (_colorWin st)
+                        loop
+                    EventSpecialKey KeyRightArrow -> do
+                        safeMoveCursor (\(y,x) -> (y,x+1)) True (_colorWin st)
+                        loop
+                    EventSpecialKey KeyUpArrow -> do
+                        safeMoveCursor (\(y,x) -> (y-1,x)) True (_colorWin st)
+                        loop
+                    EventSpecialKey KeyDownArrow -> do
+                        safeMoveCursor (\(y,x) -> (y+1,x)) True (_colorWin st)
+                        loop
+                    _ -> loop
 
 runAsciiDraw :: Curses ()
 runAsciiDraw = do
@@ -382,56 +454,28 @@ runAsciiDraw = do
     st <- ADS
         <$> mkColorPicker
         <*> mkGlyphPicker
-        <*> newWindow 24 80 0 0
-        <*> newWindow 1 80 23 0
+        <*> (newWindow 24 80 0 0 >>= newPanel)
+        <*> (newWindow 1 80 23 0 >>= newPanel)
+        <*> mkCursorPanel
         <*> newColorID colorBrightRed colorBlack 1
         <*> pure 'X'
-        <*> pure (12, 40)
         <*> newColorID colorDarkGreen colorBlack 2
         <*> newColorID colorBrightBlue colorBlack 3
 
     stRef <- liftIO $ newIORef st
 
+    raisePanel $ _imageWin st
+    raisePanel $ _editorWin st
+    raisePanel $ _cursorPanel st
+    hidePanel $ _colorWin st
+    hidePanel $ _glyphWin st
+
     normalMode stRef
-    restoreColors oldColors
-
-cursesMain = do
-    setEcho False
-    --setCBreak False
-
-    resizeTerminal 24 80
-
-    w <- defaultWindow
-
-    oldColors <- initDefaultColors
-    glyphWin <- mkGlyphPicker
-    colorWin <- mkColorPicker
-
-    updateWindowNoRefresh w $ do
-        clear
-        drawBox Nothing Nothing
-    renderWindows [w]
-
-    liftIO $ threadDelay 1000000
-
-    renderWindows [w, glyphWin]
-
-    liftIO $ threadDelay 1000000
-
-    updateWindow w $ setTouched True
-    renderWindows [w]
-
-    liftIO $ threadDelay 1000000
-
-    renderWindows [w, colorWin]
-
-    waitFor w (\ev -> ev == EventCharacter 'q' || ev == EventCharacter 'Q')
     restoreColors oldColors
 
 main :: IO ()
 main = do
     --setLocale LC_ALL (Just "en-US.UTF-8")
-    --runCurses cursesMain
     runCurses runAsciiDraw
 
 
