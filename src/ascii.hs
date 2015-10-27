@@ -302,11 +302,19 @@ inBox (Box (h, w, y, x)) (y', x') =
     y' >= y && y' < (h+y) &&
     x' >= x && x' < (w+x)
 
-safeMoveCursor :: ((Integer, Integer) -> (Integer, Integer)) -> Bool -> Panel -> Curses ()
-safeMoveCursor fn hasBorder p = do
+data Direction = DirUp | DirDown | DirLeft | DirRight
+
+shiftDirection :: Direction -> (Integer, Integer) -> (Integer, Integer)
+shiftDirection DirUp    (y, x) = (y-1, x)
+shiftDirection DirDown  (y, x) = (y+1, x)
+shiftDirection DirLeft  (y, x) = (y, x-1)
+shiftDirection DirRight (y, x) = (y, x+1)
+
+safeMoveCursor :: Direction -> Bool -> Panel -> Curses ()
+safeMoveCursor dir hasBorder p = do
     win <- getPanelWindow p
     box <- getWindowBox hasBorder win
-    newPos <- fn <$> updateWindowNoRefresh win cursorPosition
+    newPos <- (shiftDirection dir) <$> updateWindowNoRefresh win cursorPosition
     when (inBox box newPos) $
         updateWindowNoRefresh win (uncurry moveCursor newPos)
 
@@ -356,16 +364,16 @@ insertMode stateRef = do
                         updateCurrentChar c stateRef
                         normalLoop
                     EventSpecialKey KeyLeftArrow -> do
-                        safeMoveCursor (\(y,x) -> (y,x-1)) False (_imageWin st)
+                        safeMoveCursor DirLeft False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyRightArrow -> do
-                        safeMoveCursor (\(y,x) -> (y,x+1)) False (_imageWin st)
+                        safeMoveCursor DirRight False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyUpArrow -> do
-                        safeMoveCursor (\(y,x) -> (y-1,x)) False (_imageWin st)
+                        safeMoveCursor DirUp False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyDownArrow -> do
-                        safeMoveCursor (\(y,x) -> (y+1,x)) False (_imageWin st)
+                        safeMoveCursor DirDown False (_imageWin st)
                         normalLoop
                     EventSpecialKey (KeyFunction 1) -> do
                         colorPrompt stateRef
@@ -398,16 +406,16 @@ normalMode stateRef = do
                     EventCharacter 'q' -> return ()
                     EventCharacter 'i' -> insertMode stateRef
                     EventSpecialKey KeyLeftArrow -> do
-                        safeMoveCursor (\(y,x) -> (y,x-1)) False (_imageWin st)
+                        safeMoveCursor DirLeft False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyRightArrow -> do
-                        safeMoveCursor (\(y,x) -> (y,x+1)) False (_imageWin st)
+                        safeMoveCursor DirRight False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyUpArrow -> do
-                        safeMoveCursor (\(y,x) -> (y-1,x)) False (_imageWin st)
+                        safeMoveCursor DirUp False (_imageWin st)
                         normalLoop
                     EventSpecialKey KeyDownArrow -> do
-                        safeMoveCursor (\(y,x) -> (y+1,x)) False (_imageWin st)
+                        safeMoveCursor DirDown False (_imageWin st)
                         normalLoop
                     _ -> normalLoop
 
@@ -431,17 +439,23 @@ colorPrompt stateRef = do
                 Just ev' -> case ev' of
                     EventCharacter 'q' -> do
                         return ()
+                    --EventSpecialKey KeyEnter -> do
+                    EventCharacter '\n' -> do
+                        colorWin <- getPanelWindow $ _colorWin st
+                        (y, x) <- updateWindowNoRefresh colorWin cursorPosition
+                        let color = ColorID . fromIntegral $ (y-1) * 16 + (x-1)
+                        liftIO $ writeIORef stateRef (st {_currentColor = color})
                     EventSpecialKey KeyLeftArrow -> do
-                        safeMoveCursor (\(y,x) -> (y,x-1)) True (_colorWin st)
+                        safeMoveCursor DirLeft True (_colorWin st)
                         loop
                     EventSpecialKey KeyRightArrow -> do
-                        safeMoveCursor (\(y,x) -> (y,x+1)) True (_colorWin st)
+                        safeMoveCursor DirRight True (_colorWin st)
                         loop
                     EventSpecialKey KeyUpArrow -> do
-                        safeMoveCursor (\(y,x) -> (y-1,x)) True (_colorWin st)
+                        safeMoveCursor DirUp True (_colorWin st)
                         loop
                     EventSpecialKey KeyDownArrow -> do
-                        safeMoveCursor (\(y,x) -> (y+1,x)) True (_colorWin st)
+                        safeMoveCursor DirDown True (_colorWin st)
                         loop
                     _ -> loop
 
