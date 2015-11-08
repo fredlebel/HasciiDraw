@@ -452,7 +452,7 @@ visualMode stateRef = do
             st <- liftIO $ readIORef stateRef
             showPanel $ _visualPanel st
             (cy, cx) <- updatePanel (_imagePanel st) cursorPosition
-            modVisualPanel (\_ -> (3, 3, cy-1, cx-1))
+            modVisualPanel (\_ -> (1, 1, cy, cx))
             setCursorMode CursorInvisible
 
         leave = do
@@ -478,15 +478,27 @@ visualMode stateRef = do
                moveCursor 0 0
                drawString "VISUAL"
 
+        updateVisualSelection update = do
+            st <- liftIO $ readIORef stateRef
+            let vp = _visualPanel st
+            vw <- getPanelWindow vp
+            (h, w, y, x) <- getWindowRect vw
+            tmpWin <- newWindow h w y x
+            imageWin <- getPanelWindow (_imagePanel st)
+            updateWindow tmpWin $ overwriteFrom imageWin
+            updateWindow tmpWin update
+            updateWindow imageWin $ overwriteFrom tmpWin
+            closeWindow tmpWin
+
         drawSelection = do
             st <- liftIO $ readIORef stateRef
             let vp = _visualPanel st
             vw <- getPanelWindow vp
             imageWin <- getPanelWindow (_imagePanel st)
             updateWindow vw $ do
+                setBackground $ Glyph ' ' [AttributeReverse]
                 clear
-                overwriteFrom imageWin
-                drawBox Nothing Nothing
+                overlayFrom imageWin
 
         loop = do
             drawStatusBar
@@ -495,7 +507,6 @@ visualMode stateRef = do
             win <- defaultWindow
             refreshPanels
             render
-            imageWin <- getPanelWindow $ _imagePanel st
             ev <- getEvent win Nothing
             case ev of
                 Nothing -> loop
@@ -506,10 +517,6 @@ visualMode stateRef = do
                             Nothing -> leave >> normalMode stateRef
                             Just _ -> loop
                     EventCharacter 'i' -> leave >> insertMode stateRef
-                    EventCharacter 'p' -> do
-                        updateWindow imageWin $ do
-                            drawGlyph $ Glyph (_currentChar st) [AttributeColor (_currentColor st)]
-                        loop
                     EventSpecialKey KeyLeftArrow -> do
                         modVisualPanel $ \(h, w, y, x) -> (h, w-1, y, x)
                         loop
@@ -528,15 +535,26 @@ visualMode stateRef = do
                     EventSpecialKey (KeyFunction 2) -> do
                         glyphPrompt stateRef
                         loop
+                    EventCharacter 'b' -> do
+                        updateVisualSelection $ drawBox Nothing Nothing
+                        loop
+                    EventCharacter 'p' -> do
+                        updateVisualSelection $ do
+                            setBackground $ Glyph (_currentChar st) [AttributeColor (_currentColor st)]
+                            clear
+                        loop
                     _ -> loop
 
 prompt :: ((Integer, Integer) -> Curses ()) -> (AsciiDrawState -> Panel) -> IORef AsciiDrawState -> Curses ()
 prompt fn panel stateRef = do
     st <- liftIO $ readIORef stateRef
+    oldCursorMode <- setCursorMode CursorVisible
     showPanel $ panel st
     raisePanel $ _cursorPanel st
     loop
     hidePanel $ panel st
+    setCursorMode oldCursorMode
+    return ()
     where
         loop = do
             st <- liftIO $ readIORef stateRef
