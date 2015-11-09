@@ -292,6 +292,7 @@ data AsciiDrawState = ADS
     , _colorNormal :: ColorID
     , _colorInsert :: ColorID
     , _colorVisual :: ColorID
+    , _yankWin :: Window
     }
 
 $(makeLenses ''AsciiDrawState)
@@ -336,6 +337,24 @@ moveCursorPanel curPan hostPan = do
 
 updateCurrentChar c stateRef = do
     liftIO $ modifyIORef stateRef (set currentChar c)
+
+yankAction :: (Integer, Integer, Integer, Integer) -> IORef AsciiDrawState -> Curses ()
+yankAction (h, w, y, x) stateRef = do
+    st <- liftIO $ readIORef stateRef
+    imageWin <- getPanelWindow (_imagePanel st)
+    updateWindow (_yankWin st) $ do
+        resizeWindow h w
+        moveWindow y x
+        overwriteFrom imageWin
+    return ()
+
+pasteAction :: (Integer, Integer) -> IORef AsciiDrawState -> Curses ()
+pasteAction (y, x) stateRef = do
+    st <- liftIO $ readIORef stateRef
+    (yh, yw, _, _) <- getWindowRect (_yankWin st)
+    updatePanel (_imagePanel st) $ do
+        copyFrom (_yankWin st) 0 0 y x (min (y + yh - 1) 23) (min (x + yw - 1) 79) False
+    return ()
 
 insertMode :: IORef AsciiDrawState -> Curses ()
 insertMode stateRef = do
@@ -410,7 +429,7 @@ normalMode stateRef = do
             moveCursorPanel (_cursorPanel st) (_imagePanel st)
             refreshPanels
             render
-            imageWin <- getPanelWindow $ _imagePanel st
+            --imageWin <- getPanelWindow $ _imagePanel st
             ev <- getEvent w Nothing
             case ev of
                 Nothing -> loop
@@ -419,8 +438,8 @@ normalMode stateRef = do
                     EventCharacter 'i' -> insertMode stateRef
                     EventCharacter 'v' -> visualMode stateRef
                     EventCharacter 'p' -> do
-                        updateWindow imageWin $ do
-                            drawGlyph $ Glyph (_currentChar st) [AttributeColor (_currentColor st)]
+                        curPos <- getPanelWindow (_imagePanel st) >>= flip updateWindow cursorPosition
+                        pasteAction curPos stateRef
                         loop
                     EventSpecialKey KeyLeftArrow -> do
                         safeMoveCursor DirLeft False (_imagePanel st)
@@ -538,10 +557,37 @@ visualMode stateRef = do
                     EventCharacter 'b' -> do
                         updateVisualSelection $ drawBox Nothing Nothing
                         loop
+                    EventCharacter 'B' -> do
+                        evProbe <- getEvent win Nothing
+                        case evProbe of
+                            Nothing -> loop
+                            Just (EventCharacter ch) -> do
+                                updateVisualSelection $ do
+                                    let glyph = Just $ Glyph ch [AttributeColor (_currentColor st)]
+                                    drawBorder glyph glyph glyph glyph glyph glyph glyph glyph
+                                loop
+                            _ -> loop
+                    EventCharacter 'd' -> do
+                        updateVisualSelection $ clear
+                        loop
                     EventCharacter 'p' -> do
                         updateVisualSelection $ do
                             setBackground $ Glyph (_currentChar st) [AttributeColor (_currentColor st)]
                             clear
+                        loop
+                    EventCharacter 'f' -> do
+                        evProbe <- getEvent win Nothing
+                        case evProbe of
+                            Nothing -> loop
+                            Just (EventCharacter ch) -> do
+                                updateVisualSelection $ do
+                                    setBackground $ Glyph ch [AttributeColor (_currentColor st)]
+                                    clear
+                                loop
+                            _ -> loop
+                    EventCharacter 'y' -> do
+                        rect <- getPanelWindow (_visualPanel st) >>= getWindowRect
+                        yankAction rect stateRef
                         loop
                     _ -> loop
 
@@ -617,6 +663,7 @@ runAsciiDraw = do
         <*> newColorID colorDarkGreen colorBrightYellow 2  -- Normal
         <*> newColorID colorBrightBlue colorBrightCyan 3 -- Insert
         <*> newColorID colorBlack colorBrightRed 4 -- Visual
+        <*> newWindow 24 80 0 0 -- Yank window
 
     stRef <- liftIO $ newIORef st
 
