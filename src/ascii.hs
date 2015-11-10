@@ -293,6 +293,7 @@ data AsciiDrawState = ADS
     , _colorInsert :: ColorID
     , _colorVisual :: ColorID
     , _yankWin :: Window
+    , _undoBuffer :: [Window]
     }
 
 $(makeLenses ''AsciiDrawState)
@@ -356,6 +357,25 @@ pasteAction (y, x) stateRef = do
         copyFrom (_yankWin st) 0 0 y x (min (y + yh - 1) 23) (min (x + yw - 1) 79) False
     return ()
 
+pushUndo stateRef= do
+    st <- liftIO $ readIORef stateRef
+    undoWin <- newWindow 24 80 0 0
+    imageWin <- getPanelWindow (_imagePanel st)
+    updateWindow undoWin $ overwriteFrom imageWin
+    liftIO $ modifyIORef stateRef (over undoBuffer (undoWin:))
+
+popUndo stateRef= do
+    st <- liftIO $ readIORef stateRef
+    doPop (_undoBuffer st)
+    where
+        doPop [] = return ()
+        doPop (win:wins) = do
+            st <- liftIO $ readIORef stateRef
+            imageWin <- getPanelWindow (_imagePanel st)
+            updateWindow imageWin $ overwriteFrom win
+            liftIO $ modifyIORef stateRef (set undoBuffer wins)
+            closeWindow win
+
 insertMode :: IORef AsciiDrawState -> Curses ()
 insertMode stateRef = do
     st <- liftIO $ readIORef stateRef
@@ -383,7 +403,8 @@ insertMode stateRef = do
                     EventCharacter '\x001B' -> do -- ESC or ALT
                         evProbe <- getEvent w (Just 0)
                         case evProbe of
-                            Nothing -> normalMode stateRef
+                            Nothing -> do
+                                normalMode stateRef
                             Just _ -> loop
                     EventCharacter c -> do
                         updateWindow imageWin $ do
@@ -435,9 +456,11 @@ normalMode stateRef = do
                 Nothing -> loop
                 Just ev' -> case ev' of
                     EventCharacter 'q' -> return ()
-                    EventCharacter 'i' -> insertMode stateRef
+                    EventCharacter 'i' -> pushUndo stateRef >> insertMode stateRef
                     EventCharacter 'v' -> visualMode stateRef
+                    EventCharacter 'u' -> popUndo stateRef >> loop
                     EventCharacter 'p' -> do
+                        pushUndo stateRef
                         curPos <- getPanelWindow (_imagePanel st) >>= flip updateWindow cursorPosition
                         pasteAction curPos stateRef
                         loop
@@ -535,7 +558,7 @@ visualMode stateRef = do
                         case evProbe of
                             Nothing -> leave >> normalMode stateRef
                             Just _ -> loop
-                    EventCharacter 'i' -> leave >> insertMode stateRef
+                    EventCharacter 'i' -> leave >> pushUndo stateRef >> insertMode stateRef
                     EventSpecialKey KeyLeftArrow -> do
                         modVisualPanel $ \(h, w, y, x) -> (h, w-1, y, x)
                         loop
@@ -555,6 +578,7 @@ visualMode stateRef = do
                         glyphPrompt stateRef
                         loop
                     EventCharacter 'b' -> do
+                        pushUndo stateRef
                         updateVisualSelection $ drawBox Nothing Nothing
                         loop
                     EventCharacter 'B' -> do
@@ -562,15 +586,18 @@ visualMode stateRef = do
                         case evProbe of
                             Nothing -> loop
                             Just (EventCharacter ch) -> do
+                                pushUndo stateRef
                                 updateVisualSelection $ do
                                     let glyph = Just $ Glyph ch [AttributeColor (_currentColor st)]
                                     drawBorder glyph glyph glyph glyph glyph glyph glyph glyph
                                 loop
                             _ -> loop
                     EventCharacter 'd' -> do
+                        pushUndo stateRef
                         updateVisualSelection $ clear
                         loop
                     EventCharacter 'p' -> do
+                        pushUndo stateRef
                         updateVisualSelection $ do
                             setBackground $ Glyph (_currentChar st) [AttributeColor (_currentColor st)]
                             clear
@@ -580,6 +607,7 @@ visualMode stateRef = do
                         case evProbe of
                             Nothing -> loop
                             Just (EventCharacter ch) -> do
+                                pushUndo stateRef
                                 updateVisualSelection $ do
                                     setBackground $ Glyph ch [AttributeColor (_currentColor st)]
                                     clear
@@ -589,6 +617,7 @@ visualMode stateRef = do
                         rect <- getPanelWindow (_visualPanel st) >>= getWindowRect
                         yankAction rect stateRef
                         loop
+                    EventCharacter 'u' -> popUndo stateRef >> loop
                     _ -> loop
 
 prompt :: ((Integer, Integer) -> Curses ()) -> (AsciiDrawState -> Panel) -> IORef AsciiDrawState -> Curses ()
@@ -664,6 +693,7 @@ runAsciiDraw = do
         <*> newColorID colorBrightBlue colorBrightCyan 3 -- Insert
         <*> newColorID colorBlack colorBrightRed 4 -- Visual
         <*> newWindow 24 80 0 0 -- Yank window
+        <*> pure []
 
     stRef <- liftIO $ newIORef st
 
