@@ -6,6 +6,7 @@
 import Control.Monad.IO.Class
 import Control.Monad
 import Data.Word
+import Data.Maybe
 import Data.IORef
 --import System.Locale.SetLocale
 import UI.NCurses
@@ -245,6 +246,14 @@ restoreColors colors = do
     zipWithM_ fn colors [0..]
     where
         fn (r,g,b) n = defineColor (Color n) r g b
+
+findColorID :: Color -> Color -> Curses ColorID
+findColorID fg bg = fromMaybe (ColorID 0) <$> foldM fn Nothing [0..255]
+    where
+        fn Nothing n = do
+            pair <- queryColorID (ColorID n)
+            return $ if pair == (fg, bg) then Just (ColorID n) else Nothing
+        fn match _ = return match
 
 updatePanel :: Panel -> Update a -> Curses a
 updatePanel p fn = getPanelWindow p >>= flip updateWindow fn
@@ -689,11 +698,11 @@ runAsciiDraw = do
         <*> (newWindow 1 80 23 0 >>= newPanel) -- Editor status bar
         <*> (newWindow 1 80 23 0 >>= newPanel) -- Visual
         <*> mkCursorPanel -- Cursor
-        <*> newColorID colorBrightRed colorBlack 1
+        <*> findColorID colorBrightRed colorBlack
         <*> pure 'X'
-        <*> newColorID colorDarkGreen colorBrightYellow 2  -- Normal
-        <*> newColorID colorBrightBlue colorBrightCyan 3 -- Insert
-        <*> newColorID colorBlack colorBrightRed 4 -- Visual
+        <*> findColorID colorDarkGreen colorBrightYellow  -- Normal
+        <*> findColorID colorBrightBlue colorBrightCyan -- Insert
+        <*> findColorID colorBlack colorBrightRed -- Visual
         <*> newWindow 24 80 0 0 -- Yank window
         <*> pure []
 
