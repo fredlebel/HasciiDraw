@@ -371,8 +371,7 @@ popUndo stateRef= do
         doPop [] = return ()
         doPop (win:wins) = do
             st <- liftIO $ readIORef stateRef
-            imageWin <- getPanelWindow (_imagePanel st)
-            updateWindow imageWin $ overwriteFrom win
+            updatePanel (_imagePanel st) $ overwriteFrom win
             liftIO $ modifyIORef stateRef (set undoBuffer wins)
             closeWindow win
 
@@ -393,6 +392,7 @@ insertMode stateRef = do
             st <- liftIO $ readIORef stateRef
             w <- defaultWindow
             moveCursorPanel (_cursorPanel st) (_imagePanel st)
+            updatePanel (_editorPanel st) $ setTouched True
             refreshPanels
             render
             ev <- getEvent w Nothing
@@ -448,6 +448,7 @@ normalMode stateRef = do
             st <- liftIO $ readIORef stateRef
             w <- defaultWindow
             moveCursorPanel (_cursorPanel st) (_imagePanel st)
+            updatePanel (_editorPanel st) $ setTouched True
             refreshPanels
             render
             --imageWin <- getPanelWindow $ _imagePanel st
@@ -547,6 +548,7 @@ visualMode stateRef = do
             drawSelection
             st <- liftIO $ readIORef stateRef
             win <- defaultWindow
+            updatePanel (_editorPanel st) $ setTouched True
             refreshPanels
             render
             ev <- getEvent win Nothing
